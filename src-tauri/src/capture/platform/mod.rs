@@ -30,8 +30,11 @@ pub enum CaptureTarget {
 /// A captured video source. Implementations are per-OS.
 #[async_trait::async_trait]
 pub trait ScreenCapture: Send {
-    /// Begin capture, pushing BGRA8 frames into `tx`.
-    async fn start(&mut self, tx: tokio::sync::mpsc::Sender<VideoFrame>) -> Result<(), String>;
+    /// Begin capture, pushing BGRA8 frames into `tx` (broadcast for preview + sync).
+    async fn start(
+        &mut self,
+        tx: tokio::sync::broadcast::Sender<VideoFrame>,
+    ) -> Result<(), String>;
     /// Stop capture cleanly.
     async fn stop(&mut self) -> Result<(), String>;
 }

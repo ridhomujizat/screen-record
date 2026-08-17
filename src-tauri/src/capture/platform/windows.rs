@@ -55,7 +55,7 @@ pub struct WindowsScreenCapture {
     stop: Arc<AtomicBool>,
     session: Option<GraphicsCaptureSession>,
     frame_pool: Option<Direct3D11CaptureFramePool>,
-    poll_handle: Option<std::thread::JoinHandle<()>>,
+    frame_arrived_token: Option<i64>,
     frame_counter: Arc<AtomicU64>,
     drop_counter: Arc<AtomicU64>,
 }
@@ -68,7 +68,7 @@ impl WindowsScreenCapture {
             stop: Arc::new(AtomicBool::new(false)),
             session: None,
             frame_pool: None,
-            poll_handle: None,
+            frame_arrived_token: None,
             frame_counter: Arc::new(AtomicU64::new(0)),
             drop_counter: Arc::new(AtomicU64::new(0)),
         }
@@ -246,7 +246,7 @@ fn read_frame_to_bgra(
 impl ScreenCapture for WindowsScreenCapture {
     async fn start(
         &mut self,
-        tx: tokio::sync::mpsc::Sender<VideoFrame>,
+        tx: tokio::sync::broadcast::Sender<VideoFrame>,
     ) -> Result<(), String> {
         if self.session.is_some() {
             return Err("capture already running".into());
@@ -274,72 +274,63 @@ impl ScreenCapture for WindowsScreenCapture {
             .CreateCaptureSession(&item)
             .map_err(|e| format!("CreateCaptureSession: {e}"))?;
 
-        // Cap frame rate (session-level min update interval)
+        // No SetMinUpdateInterval: WGC fires on every screen change; our
+        // per-frame cadence gate (ticks_per_frame) caps the rate instead.
+        // (SetMinUpdateInterval can stall frame delivery on some systems.)
         let fps = self.max_fps.min(60);
-        let interval_ns = (1_000_000_000i64 / fps as i64) as u64;
-        let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan {
-            Duration: interval_ns as i64,
-        });
 
         let stop = self.stop.clone();
         let frame_counter = self.frame_counter.clone();
         let drop_counter = self.drop_counter.clone();
         let device_cb = device.clone();
         let context_cb = context.clone();
-        let frame_pool_cb = frame_pool.clone();
         let ticks_per_frame = qpc_frequency() / fps as i64;
+        let last_sent_qpc = std::sync::atomic::AtomicI64::new(0);
 
-        // Poll the pool from a dedicated thread (works reliably headless; WGC
-        // FreeThreaded pools allow TryGetNextFrame from any thread).
-        let handle = std::thread::spawn(move || {
-            // COM init on this thread (WGC FreeThreaded still likes it)
-            let _ = unsafe { CoInitializeEx(None, COINIT(2)) };
-            let mut last_sent_qpc = 0i64;
-            let mut callbacks: u64 = 0;
-            while !stop.load(Ordering::Relaxed) {
-                match frame_pool_cb.TryGetNextFrame() {
-                    Ok(frame) => {
-                        callbacks += 1;
-                        let now_qpc = qpc_now();
-                        if now_qpc.saturating_sub(last_sent_qpc) >= ticks_per_frame {
-                            match read_frame_to_bgra(&frame, &device_cb, &context_cb) {
-                                Ok(vf) => {
-                                    last_sent_qpc = now_qpc;
-                                    frame_counter.fetch_add(1, Ordering::Relaxed);
-                                    if tx.blocking_send(vf).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("[capture] frame read error: {e}");
-                                    drop_counter.fetch_add(1, Ordering::Relaxed);
-                                }
+        // Event-driven: WGC fires FrameArrived whenever a new frame is ready.
+        // This is Cap's approach and avoids busy-polling the pool.
+        let token = frame_pool
+            .FrameArrived(&windows::Foundation::TypedEventHandler::<
+                Direct3D11CaptureFramePool,
+                windows::core::IInspectable,
+            >::new(move |pool, _| {
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let Some(pool) = (*pool).as_ref() else {
+                    return Ok(());
+                };
+                let Ok(frame) = pool.TryGetNextFrame() else {
+                    return Ok(());
+                };
+                let now_qpc = qpc_now();
+                if now_qpc.saturating_sub(last_sent_qpc.load(Ordering::Relaxed)) >= ticks_per_frame
+                {
+                    match read_frame_to_bgra(&frame, &device_cb, &context_cb) {
+                        Ok(vf) => {
+                            last_sent_qpc.store(now_qpc, Ordering::Relaxed);
+                            frame_counter.fetch_add(1, Ordering::Relaxed);
+                            if tx.send(vf).is_err() {
+                                return Ok(());
                             }
-                        } else {
+                        }
+                        Err(e) => {
+                            eprintln!("[capture] frame read error: {e}");
                             drop_counter.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    Err(e) => {
-                        // No new frame yet (E_BOUNDS/E_PENDING); poll again.
-                        let code = e.code().0 as u32;
-                        if code == 0x80000000 || code == 0x80070057 {
-                            // ignore normal "no frame" errors
-                        } else if callbacks < 5 {
-                            eprintln!("[capture] TryGetNextFrame err: {e:?}");
-                        }
-                    }
+                } else {
+                    drop_counter.fetch_add(1, Ordering::Relaxed);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            let _ = frame_pool_cb.Close();
-            eprintln!("[capture] poll thread exited (frames={})", frame_counter.load(Ordering::Relaxed));
-        });
+                Ok(())
+            }))
+            .map_err(|e| format!("FrameArrived: {e}"))?;
 
         session.StartCapture().map_err(|e| format!("session.Start: {e}"))?;
 
         self.session = Some(session);
         self.frame_pool = Some(frame_pool);
-        self.poll_handle = Some(handle);
+        self.frame_arrived_token = Some(token);
 
         Ok(())
     }
@@ -349,8 +340,10 @@ impl ScreenCapture for WindowsScreenCapture {
         if let Some(s) = self.session.take() {
             s.Close().ok();
         }
-        if let Some(h) = self.poll_handle.take() {
-            let _ = h.join();
+        if let Some(t) = self.frame_arrived_token.take() {
+            if let Some(p) = &self.frame_pool {
+                let _ = p.RemoveFrameArrived(t);
+            }
         }
         if let Some(p) = self.frame_pool.take() {
             p.Close().ok();

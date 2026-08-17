@@ -21,7 +21,7 @@ impl MacOsScreenCapture {
 impl ScreenCapture for MacOsScreenCapture {
     async fn start(
         &mut self,
-        _tx: tokio::sync::mpsc::Sender<VideoFrame>,
+        _tx: tokio::sync::broadcast::Sender<VideoFrame>,
     ) -> Result<(), String> {
         Err("macOS capture not implemented yet (v2, ADR-0011)".into())
     }

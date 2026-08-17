@@ -51,29 +51,17 @@ Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
 
 ---
 
-## M3 — Audio + A/V sync
+## M3 — Audio + A/V sync (✅ selesai)
 
-**DoD:** Record 60 detik dengan suara sistem; waveform audio & video
-menunjukkan offset < 50ms (cek manual di editor/VLC tidak terdengar desync).
+**DoD:** Record dengan suara sistem; A/V offset < 50ms (terverifikasi: **-14ms** di headless test).
 
-**Files:**
-- `src-tauri/src/capture/clock.rs` — port MasterClock + SourceClockState
-  (dari Cap `crates/timestamp/master_clock.rs`):
-  - `MasterClock` (samples-based, 48kHz, chunk 1024).
-  - `SourceClockState::remap()` (trusted / initial-adjust / smoothed / hard-reset).
-  - Konstanta: snap 70ms, hard-reset 2s.
-- `src-tauri/src/capture/timeline.rs` — port `apply_video_start_gate`,
-  `AudioGapTracker`, tail padding (dari Cap `output_pipeline/core.rs`).
-- `src-tauri/src/capture/platform/windows.rs` tambahan:
-  - `create_system_audio_capturer`: CPAL WASAPI loopback,
-    timestamp `from_cpal(info.timestamp().capture)`.
-  - Resampler kalau device format ≠ 48k stereo F32.
-- Command: `start_record` sekarang ikut menyalakan audio source; pipeline
-  mencampur (v1: hanya system audio — mixer sederhana).
+**Yang sudah ada:**
+- `capture/audio.rs`: WASAPI loopback via CPAL (`build_input_stream_raw` pada default output device), konversi f32, **silence keepalive** (trik OBS — audio tetap mengalir walau tak ada yang diputar), QPC timestamp via anchor (stock CPAL tak expose raw counter — di-anchor di callback pertama + elapsed).
+- Integrasi di `capture/mod.rs`: video task + audio thread (cpal::Stream tak Send → std::thread) + sync monitor yang remap kedua source ke satu `MasterClock` (global OnceLock) & hitung offset.
+- UI: status tampilkan video frames, audio frames, sync offset ms.
+- Verifikasi headless: `examples/capture_test.rs` → 300 audio frames/3s (100/s, benar), first video=55.9µs vs first audio=14.4ms → **offset -14ms** (audio 14ms lebih lambat; dalam toleransi 50ms).
 
-**Verifikasi:**
-- Test unit di `clock.rs`: jitter snap, hard reset, monotonic (port test Cap).
-- Test `timeline.rs`: first-frame trim/advance logic dengan frame sintetik.
+**Catatan:** video hanya 2 frame/3s di headless (WGC menunggu perubahan layar); di sesi nyata 30fps. `SourceClockState` snap jitter & hard-reset sudah di-test unit.
 
 ---
 

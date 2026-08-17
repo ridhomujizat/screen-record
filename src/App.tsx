@@ -18,6 +18,8 @@ interface RecordStatus {
   error: string | null;
   framesCaptured: number;
   framesDropped: number;
+  audioFrames: number;
+  syncOffsetMs: number;
 }
 
 const STATUS_IDLE: RecordStatus = {
@@ -27,6 +29,8 @@ const STATUS_IDLE: RecordStatus = {
   error: null,
   framesCaptured: 0,
   framesDropped: 0,
+  audioFrames: 0,
+  syncOffsetMs: 0,
 };
 
 function App() {
@@ -144,7 +148,8 @@ function App() {
       {status.error && <p className="error">Error: {status.error}</p>}
       {status.state === "idle" && status.framesCaptured > 0 && (
         <p className="status">
-          Done. {status.framesCaptured} frames captured.
+          Done. {status.framesCaptured} video frames, {status.audioFrames} audio
+          frames, sync offset {status.syncOffsetMs}ms.
         </p>
       )}
     </main>
