@@ -91,6 +91,17 @@ impl Muxer {
             return Err("muxer not started".into());
         };
 
+        // Guard: frame size must match the configured dimensions (resolution
+        // change mid-recording would corrupt the raw stream). Drop mismatched.
+        let expected = (self.width as usize) * (self.height as usize) * 4;
+        if data.len() != expected {
+            eprintln!(
+                "[mux] dropped frame: size {} != expected {expected} (resolution change?)",
+                data.len()
+            );
+            return Ok(());
+        }
+
         if self.video_start_ns.is_none() {
             self.video_start_ns = Some(master_ns);
         }

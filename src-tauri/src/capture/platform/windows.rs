@@ -58,10 +58,15 @@ pub struct WindowsScreenCapture {
     frame_arrived_token: Option<i64>,
     frame_counter: Arc<AtomicU64>,
     drop_counter: Arc<AtomicU64>,
+    crop: Option<(u32, u32, u32, u32)>, // (left, top, right, bottom) physical px
 }
 
 impl WindowsScreenCapture {
     pub fn new(target: CaptureTarget, max_fps: u32) -> Self {
+        let crop = match target {
+            CaptureTarget::Area { left, top, right, bottom, .. } => Some((left, top, right, bottom)),
+            _ => None,
+        };
         Self {
             target,
             max_fps: max_fps.max(1),
@@ -71,6 +76,7 @@ impl WindowsScreenCapture {
             frame_arrived_token: None,
             frame_counter: Arc::new(AtomicU64::new(0)),
             drop_counter: Arc::new(AtomicU64::new(0)),
+            crop,
         }
     }
 
@@ -164,7 +170,7 @@ fn capture_item_for(target: &CaptureTarget) -> Result<GraphicsCaptureItem, Strin
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
         .map_err(|e| format!("factory IGraphicsCaptureItemInterop: {e}"))?;
     match target {
-        CaptureTarget::Display(handle) => {
+        CaptureTarget::Display(handle) | CaptureTarget::Area { display: handle, .. } => {
             let hmon = HMONITOR(*handle as *mut _);
             unsafe { interop.CreateForMonitor(hmon) }
                 .map_err(|e| format!("CreateForMonitor: {e}"))
@@ -181,10 +187,11 @@ fn read_frame_to_bgra(
     frame: &Direct3D11CaptureFrame,
     device: &ID3D11Device,
     context: &ID3D11DeviceContext,
+    crop: Option<(u32, u32, u32, u32)>,
 ) -> Result<VideoFrame, String> {
     let size = frame.ContentSize().map_err(|e| format!("ContentSize: {e}"))?;
-    let width = size.Width as u32;
-    let height = size.Height as u32;
+    let full_w = size.Width as u32;
+    let full_h = size.Height as u32;
 
     let surface = frame.Surface().map_err(|e| format!("Surface: {e}"))?;
     let dxgi_access: IDirect3DDxgiInterfaceAccess = surface
@@ -193,9 +200,10 @@ fn read_frame_to_bgra(
     let texture: ID3D11Texture2D = unsafe { dxgi_access.GetInterface() }
         .map_err(|e| format!("GetInterface texture: {e}"))?;
 
+    // Read the FULL frame into a CPU staging texture, then crop in software.
     let desc = D3D11_TEXTURE2D_DESC {
-        Width: width,
-        Height: height,
+        Width: full_w,
+        Height: full_h,
         MipLevels: 1,
         ArraySize: 1,
         Format: PIXEL_FORMAT_DXGI as _,
@@ -217,15 +225,24 @@ fn read_frame_to_bgra(
         .map_err(|e| format!("Map: {e}"))?;
 
     let src = unsafe {
-        std::slice::from_raw_parts(mapped.pData as *const u8, (mapped.RowPitch * height) as usize)
+        std::slice::from_raw_parts(mapped.pData as *const u8, (mapped.RowPitch * full_h) as usize)
     };
 
-    let mut data = vec![0u8; (width * height * 4) as usize];
-    for y in 0..height {
-        let row_src = &src[(y as usize * mapped.RowPitch as usize)..];
-        let dst = &mut data[(y as usize * width as usize * 4)..];
-        dst[..(width as usize * 4)]
-            .copy_from_slice(&row_src[..(width as usize * 4)]);
+    // Determine output region (crop or full).
+    let (out_w, out_h, src_left, src_top) = match crop {
+        Some((l, t, r, b)) if r > l && b > t && r <= full_w && b <= full_h => {
+            ((r - l) as usize, (b - t) as usize, l as usize, t as usize)
+        }
+        _ => (full_w as usize, full_h as usize, 0usize, 0usize),
+    };
+
+    let mut data = vec![0u8; out_w * out_h * 4];
+    let row_bytes = out_w * 4;
+    let src_stride = mapped.RowPitch as usize;
+    for y in 0..out_h {
+        let src_row = &src[((src_top + y) * src_stride + src_left * 4)..];
+        let dst = &mut data[(y * row_bytes)..];
+        dst[..row_bytes].copy_from_slice(&src_row[..row_bytes]);
     }
 
     unsafe { context.Unmap(&staging, 0) };
@@ -235,8 +252,8 @@ fn read_frame_to_bgra(
         .map_err(|e| format!("SystemRelativeTime: {e}"))?;
 
     Ok(VideoFrame {
-        width,
-        height,
+        width: out_w as u32,
+        height: out_h as u32,
         data,
         timestamp: RawTimestamp::from_qpc(ts.Duration),
     })
@@ -284,6 +301,7 @@ impl ScreenCapture for WindowsScreenCapture {
         let drop_counter = self.drop_counter.clone();
         let device_cb = device.clone();
         let context_cb = context.clone();
+        let crop_cb = self.crop;
         let ticks_per_frame = qpc_frequency() / fps as i64;
         let last_sent_qpc = std::sync::atomic::AtomicI64::new(0);
 
@@ -306,7 +324,7 @@ impl ScreenCapture for WindowsScreenCapture {
                 let now_qpc = qpc_now();
                 if now_qpc.saturating_sub(last_sent_qpc.load(Ordering::Relaxed)) >= ticks_per_frame
                 {
-                    match read_frame_to_bgra(&frame, &device_cb, &context_cb) {
+                    match read_frame_to_bgra(&frame, &device_cb, &context_cb, crop_cb) {
                         Ok(vf) => {
                             last_sent_qpc.store(now_qpc, Ordering::Relaxed);
                             frame_counter.fetch_add(1, Ordering::Relaxed);

@@ -351,3 +351,46 @@ select:disabled {
   font-size: 0.78rem;
   color: #94a3b8;
 }
+
+.area-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.area-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.area-toggle input {
+  accent-color: #6366f1;
+}
+
+.area-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.area-inputs input {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  outline: none;
+}
+
+.area-inputs input:focus {
+  border-color: #6366f1;
+}

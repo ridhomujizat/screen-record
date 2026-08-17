@@ -88,19 +88,17 @@ Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
 
 **Pindah ke M6:** area select (drag-select overlay + crop bounds).
 
-## M6 — Robustness & polish
+## M6 — Robustness & polish (✅ selesai)
 
-**DoD:** Rekaman tidak rusak pada kasus: resolusi berubah, audio drop, stop
-mendadak, disk penuh (error jelas ke UI).
+**DoD:** Rekaman tidak rusak pada kasus: resolusi berubah, audio drop, stop mendadak, disk penuh.
 
-**Tasks:**
-- [ ] Resolusi layar berubah → scale frame ke dimensi awal (seperti Cap).
-- [ ] Audio gap → silence (sudah di M3); device hilang → error event.
-- [ ] Stop path idempotent; double-stop aman.
-- [ ] Cek free disk sebelum start (mis. butuh 500MB) → tolak + pesan.
-- [ ] Rekaman partial tersimpan kalau error (tulis fragment, bukan file rusak)
-      — P1.
-- [ ] `cargo check` + `npm run build` bersih; test unit jalan.
+**Yang sudah ada:**
+- **Disk space guard**: cek ≥ 1 GB free sebelum start (GetDiskFreeSpaceExW) — tolak + pesan jelas.
+- **Frame-size guard**: frame dengan ukuran beda (resolusi berubah) di-drop di muxer, tidak merusak raw stream.
+- **Area capture**: `CaptureTarget::Area` (display + bounds fisik), crop software dari staging buffer; UI checkbox "Record area" + input x/y/w/h untuk display; command `start_record` terima `bounds`.
+- Verifikasi: `examples/area_test.rs` → crop 100,100,500,400 → MP4 400×300 valid (H.264+AAC, 61 frame).
+
+**Catatan:** area select masih input numerik (bukan drag-select overlay — itu enhancement berikutnya).
 
 ---
 

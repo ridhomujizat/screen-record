@@ -44,6 +44,11 @@ export default function App() {
   const [selected, setSelected] = useState<SourceInfo | null>(null);
   const [status, setStatus] = useState<RecordStatus>(STATUS_IDLE);
   const [elapsed, setElapsed] = useState(0);
+  const [areaMode, setAreaMode] = useState(false);
+  const [areaX, setAreaX] = useState("0");
+  const [areaY, setAreaY] = useState("0");
+  const [areaW, setAreaW] = useState("");
+  const [areaH, setAreaH] = useState("");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -97,7 +102,16 @@ export default function App() {
     setStatus({ ...STATUS_IDLE, state: "starting" });
     setElapsed(0);
     try {
-      await invoke("start_record", { targetId: selected.id, kind: selected.kind });
+      // area mode: pass crop bounds (physical px within the display)
+      let bounds: [number, number, number, number] | undefined;
+      let kind = selected.kind;
+      if (areaMode && selected.kind === "display") {
+        const x = Number(areaX), y = Number(areaY), w = Number(areaW), h = Number(areaH);
+        if (!(w > 0 && h > 0)) throw new Error("Area size must be > 0");
+        bounds = [x, y, x + w, y + h];
+        kind = "area";
+      }
+      await invoke("start_record", { targetId: selected.id, kind, bounds });
       timerRef.current = window.setInterval(() => setElapsed((e) => e + 1000), 1000);
     } catch (e) {
       setStatus({ ...STATUS_IDLE, state: "error", error: String(e) });
@@ -170,6 +184,27 @@ export default function App() {
             <p className="meta">
               {selected.width}×{selected.height}
             </p>
+          )}
+
+          {selected?.kind === "display" && !recording && (
+            <div className="area-row">
+              <label className="area-toggle">
+                <input
+                  type="checkbox"
+                  checked={areaMode}
+                  onChange={(e) => setAreaMode(e.target.checked)}
+                />
+                Record area (crop)
+              </label>
+              {areaMode && (
+                <div className="area-inputs">
+                  <input placeholder="x" value={areaX} onChange={(e) => setAreaX(e.target.value)} />
+                  <input placeholder="y" value={areaY} onChange={(e) => setAreaY(e.target.value)} />
+                  <input placeholder="w" value={areaW} onChange={(e) => setAreaW(e.target.value)} />
+                  <input placeholder="h" value={areaH} onChange={(e) => setAreaH(e.target.value)} />
+                </div>
+              )}
+            </div>
           )}
         </section>
 

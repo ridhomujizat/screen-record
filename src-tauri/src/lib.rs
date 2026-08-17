@@ -24,6 +24,9 @@ async fn list_sources() -> Result<Vec<SourceInfo>, String> {
             let (id, kind) = match target {
                 platform::CaptureTarget::Display(id) => (id, "display".to_string()),
                 platform::CaptureTarget::Window(id) => (id, "window".to_string()),
+                platform::CaptureTarget::Area { display, .. } => {
+                    (display, "area".to_string())
+                }
             };
             SourceInfo {
                 id,
@@ -37,14 +40,62 @@ async fn list_sources() -> Result<Vec<SourceInfo>, String> {
 }
 
 #[tauri::command]
-async fn start_record(app: AppHandle, target_id: u64, kind: String) -> Result<(), String> {
+async fn start_record(
+    app: AppHandle,
+    target_id: u64,
+    kind: String,
+    bounds: Option<(u32, u32, u32, u32)>,
+) -> Result<(), String> {
     let target = match kind.as_str() {
         "display" => platform::CaptureTarget::Display(target_id),
         "window" => platform::CaptureTarget::Window(target_id),
+        "area" => match bounds {
+            Some((l, t, r, b)) => platform::CaptureTarget::Area {
+                display: target_id,
+                left: l,
+                top: t,
+                right: r,
+                bottom: b,
+            },
+            None => return Err("area capture requires bounds".into()),
+        },
         _ => return Err("unknown target kind".into()),
     };
+
+    // Disk space guard (M6): refuse to start if < 1 GB free.
+    if let Some(free_gb) = free_disk_gb() {
+        if free_gb < 1.0 {
+            return Err(format!(
+                "Not enough disk space: {free_gb:.1} GB free (need ≥ 1 GB)"
+            ));
+        }
+    }
+
     let recorder: State<'_, Recorder> = app.state::<Recorder>();
     recorder.start(app.clone(), target).await
+}
+
+fn free_disk_gb() -> Option<f64> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        let wide: Vec<u16> = drive.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut free: u64 = 0;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                Some(&mut free),
+                None,
+                None,
+            )
+        };
+        ok.is_ok().then(|| free as f64 / 1e9)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 #[tauri::command]

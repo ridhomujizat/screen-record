@@ -25,6 +25,14 @@ pub struct VideoFrame {
 pub enum CaptureTarget {
     Display(u64),
     Window(u64),
+    /// Area capture: display handle + crop rect in PHYSICAL pixels (left, top, right, bottom).
+    Area {
+        display: u64,
+        left: u32,
+        top: u32,
+        right: u32,
+        bottom: u32,
+    },
 }
 
 /// A captured video source. Implementations are per-OS.
