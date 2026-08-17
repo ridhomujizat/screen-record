@@ -4,6 +4,7 @@
 //! ADR-0012) → MasterClock remap → per-source WAVs (ADR-0013) → UI events.
 
 pub mod audio;
+pub mod censor;
 pub mod clock;
 pub mod mux;
 pub mod platform;
@@ -12,7 +13,7 @@ pub mod timeline;
 use platform::ScreenCapture as _;
 
 use std::sync::{
-    Arc,
+    Arc, RwLock,
     atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
 };
 use std::path::PathBuf;
@@ -22,6 +23,7 @@ use tauri::{AppHandle, Emitter};
 
 use audio::{AudioMode, AudioOpts};
 use clock::{MasterClock, SourceClockState};
+use censor::{CensorConfig, Rect};
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +68,8 @@ struct RecorderState {
     mic_frames: Arc<AtomicU64>,
     mic_drops: Arc<AtomicU64>,
     sync_offset_ms: Arc<AtomicI64>,
+    /// Censor worker died mid-record → finalize as error (PD-0003 §4.5).
+    censor_failed: Arc<AtomicBool>,
 }
 
 impl RecorderState {
@@ -80,6 +84,7 @@ impl RecorderState {
             mic_frames: Arc::new(AtomicU64::new(0)),
             mic_drops: Arc::new(AtomicU64::new(0)),
             sync_offset_ms: Arc::new(AtomicI64::new(0)),
+            censor_failed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -111,6 +116,7 @@ impl Recorder {
         app: AppHandle,
         target: platform::CaptureTarget,
         audio: AudioOpts,
+        censor: CensorConfig,
     ) -> Result<(), String> {
         if self.state.recording.load(Ordering::Relaxed) {
             return Err("already recording".into());
@@ -127,6 +133,26 @@ impl Recorder {
             c.store(0, Ordering::Relaxed);
         }
         self.state.sync_offset_ms.store(0, Ordering::Relaxed);
+        self.state.censor_failed.store(false, Ordering::Relaxed);
+
+        // Censor (PD-0003, ADR-0015): model load fail-closes the start;
+        // worker scans the latest frame at 2 fps → shared sensor rects.
+        let censor_on = censor.enabled && !censor.keywords.is_empty();
+        let regions: Arc<RwLock<Vec<Rect>>> = Arc::new(RwLock::new(Vec::new()));
+        let latest: Arc<tokio::sync::Mutex<Option<(Arc<Vec<u8>>, u32, u32)>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        if censor_on {
+            let engine = censor::ocr::OcrEngine::load(&censor::ocr::models_dir(&app))
+                .map_err(|e| format!("censor model load failed: {e}"))?;
+            let state_censor = self.state.clone();
+            let app_censor = app.clone();
+            let regions_w = regions.clone();
+            let latest_w = latest.clone();
+            let cfg_w = censor.clone();
+            std::thread::spawn(move || {
+                run_censor_worker(engine, cfg_w, latest_w, regions_w, state_censor, app_censor)
+            });
+        }
 
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         // Video: broadcast so both preview (expensive) and sync pump can read.
@@ -208,6 +234,9 @@ impl Recorder {
         let sys_cs2 = sys_clock_state.clone();
         let mic_cs2 = mic_clock_state.clone();
         let mic_enabled = audio.mic;
+        let censor_on2 = censor_on;
+        let regions2 = regions.clone();
+        let latest2 = latest.clone();
         let pump = tokio::spawn(async move {
             let mut last_audio_ns: Option<u64> = None;
             let mut last_video_ns: Option<u64> = None;
@@ -215,10 +244,11 @@ impl Recorder {
             let mut last_meter = Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now);
+            let mut ocr_feed = Instant::now();
 
             loop {
                 tokio::select! {
-                    Ok(vf) = vrx_2.recv() => {
+                    Ok(mut vf) = vrx_2.recv() => {
                         let remap = {
                             let mut cs = video_cs2.lock().unwrap();
                             cs.remap(&clock, vf.timestamp, 33_333_333)
@@ -231,6 +261,19 @@ impl Recorder {
                             m.start(&dir).ok();
                             muxer = Some(m);
                             eprintln!("[mux] started {w}x{h}", w = vf.width, h = vf.height);
+                        }
+                        if censor_on2 {
+                            // feed the OCR worker at ~2 fps (latest-frame slot)
+                            if ocr_feed.elapsed() >= Duration::from_millis(500) {
+                                ocr_feed = Instant::now();
+                                *latest2.lock().await =
+                                    Some((Arc::new(vf.data.clone()), vf.width, vf.height));
+                            }
+                            // stamp sensor boxes BEFORE any disk write (ADR-0015)
+                            let rects = regions2.read().unwrap().clone();
+                            if !rects.is_empty() {
+                                censor::stamp(&mut vf.data, vf.width, vf.height, &rects);
+                            }
                         }
                         if let Some(m) = muxer.as_mut() {
                             let _ = m.push_video(&vf.data, remap.master_ns);
@@ -296,8 +339,20 @@ impl Recorder {
                 match m.finish(&out) {
                     Ok(p) => {
                         eprintln!("[mux] MP4 saved: {}", p.display());
-                        let mut st = state_pump.status("finished", last_audio_ns.map(|n| n / 1_000_000).unwrap_or(0));
+                        let failed =
+                            state_pump.censor_failed.load(Ordering::Relaxed);
+                        let mut st = state_pump.status(
+                            if failed { "error" } else { "finished" },
+                            last_audio_ns.map(|n| n / 1_000_000).unwrap_or(0),
+                        );
                         st.file_path = Some(p.to_string_lossy().to_string());
+                        if failed {
+                            st.error = Some(
+                                "censor-failed: sensor error — recording stopped \
+                                 early; review or delete the file."
+                                    .into(),
+                            );
+                        }
                         let _ = app_sync2.emit("record-status", st);
                     }
                     Err(e) => {
@@ -412,6 +467,48 @@ fn spawn_audio_thread(
 }
 
 // ---- helpers (kept small) ----
+
+/// OCR censor worker (PD-0003): scan the latest frame every 500 ms, update
+/// the dwell-stabilized region tracker, publish sensor rects. Fatal engine
+/// error stops the recording (fail-closed, PRD §4.5).
+fn run_censor_worker(
+    mut engine: censor::ocr::OcrEngine,
+    cfg: censor::CensorConfig,
+    latest: Arc<tokio::sync::Mutex<Option<(Arc<Vec<u8>>, u32, u32)>>>,
+    regions: Arc<RwLock<Vec<Rect>>>,
+    state: Arc<RecorderState>,
+    app: AppHandle,
+) {
+    let mut tracker = censor::RegionTracker::default();
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if !state.recording.load(Ordering::Relaxed) {
+            break;
+        }
+        let snap = latest.blocking_lock().take();
+        let Some((data, w, h)) = snap else { continue };
+        let hits = match engine.scan(&data, w, h, &cfg.keywords) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[censor] fatal: {e}");
+                state.censor_failed.store(true, Ordering::Relaxed);
+                state.recording.store(false, Ordering::Relaxed);
+                if let Some(tx) = state.stop_tx.blocking_lock().take() {
+                    let _ = tx.send(());
+                }
+                break;
+            }
+        };
+        tracker.update(hits);
+        let rects = tracker.active_rects(&cfg, w as i32, h as i32);
+        *regions.write().unwrap() = rects.clone();
+        let _ = app.emit(
+            "censor-status",
+            censor::CensorStatus { active: rects.len(), frame_w: w, frame_h: h, rects },
+        );
+    }
+    eprintln!("[censor] worker exit");
+}
 
 fn dirs_videos_dir() -> PathBuf {
     // ~/Videos/screen-record (fallback to temp)

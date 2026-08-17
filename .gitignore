@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ffmpeg sidecar (103MB) — download via src-tauri/binaries/download-ffmpeg.sh
+src-tauri/binaries/*.exe

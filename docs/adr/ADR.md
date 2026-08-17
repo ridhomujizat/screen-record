@@ -331,3 +331,73 @@ diterapkan di layer WAV).
   drift laten pada jalur system-audio yang ada.
 - (−) Tidak ada monitor *mix* live (bukan goal v1; meter cukup).
 - (−) Proteksi clipping = clamp saja (limiter non-goal).
+
+---
+
+## ADR-0014: Deteksi label sensitif via PaddleOCR mobile latin (ONNX Runtime)
+
+**Status:** Accepted — detail: [0014](0014-sensitive-data-detection-paddleocr-mobile-latn-onnx.md)
+
+**Konteks:**
+Butuh deteksi teks real-time pada frame untuk menemukan *label* sensitif
+("Password", "API Key") tanpa sidecar Python, CPU ringan (2 fps @ ≤1280px),
+latin saja, dan tetap cross-platform.
+
+**Keputusan:**
+Model **PP-OCRv4 mobile ONNX** (DB det + CTC rec latin, ~15 MB, di-pin dan
+dibundel) dieksekusi via crate **`ort`** (CPU EP) di worker thread
+`capture/censor/ocr.rs`. Pre/post-processing (DB binarize, CTC decode) Rust
+murni. Worker ambil frame terbaru (single-slot, skip kalau sibuk); hasil yang
+keluar hanya keyword cocok + bbox — teks recognisi tidak pernah di-log.
+
+**Konsekuensi:**
+- (+) Model ringan kelas benchmark, akurat utk font UI kecil; portabel
+  Windows/macOS; EP bisa dinaikkan ke GPU tanpa ubah pipeline.
+- (−) Post-processing DB + CTC ditulis tangan (~400 baris) — bagian paling
+  rewel; versi model di-pin, tidak di-track.
+
+---
+
+## ADR-0015: Sensor distempel ke frame sebelum tulis disk, anchor keyword + dwell
+
+**Status:** Accepted — detail: [0015](0015-censor-boxes-stamped-pre-encode-with-region-dwell.md)
+
+**Konteks:**
+Pipeline hari ini menulis BGRA mentah ke `video.raw` lalu ffmpeg saat finish
+(ADR-0013). Sensor harus menjamin nilai sensitif **tidak pernah menyentuh
+disk** — bukan overlay UI, bukan pasca-proses file jadi. OCR jalan 2 fps
+sementara frame ditulis 30 fps — miss satu scan tidak boleh bikin box flicker.
+
+**Keputusan:**
+Sync pump menstempel **kotak solid hitam** pada frame BGRA **sebelum**
+append ke `video.raw`. Geometri dari bbox keyword: `x = kw.right + 5`,
+`y = kw.center_y − 50`, `500×100`, clamp ke frame. Region aktif pada deteksi
+pertama, dihapus setelah 2 scan berturut tidak terlihat (dwell); re-deteksi
+dengan pusat di dalam region lama me-refresh region itu. Sensor off → jalur
+byte-identik dengan hari ini.
+
+**Konsekuensi:**
+- (+) Semua artefak disk bersih by construction; jendela leak hanya interval
+  scan; dwell menyerap jitter OCR.
+- (−) `video.raw` bukan lagi mirror forensik layar; region basi maksimal
+  ~1 detik saat UI berubah cepat.
+
+---
+
+## ADR-0016: Bundle ffmpeg sebagai Tauri sidecar
+
+**Status:** Accepted — detail: [0016](0016-bundle-ffmpeg-sidecar.md)
+
+**Konteks:**
+`finish()` memanggil `Command::new("ffmpeg")` — app ter-install di mesin
+bersih tanpa ffmpeg gagal di setiap rekaman. Encode butuh `libx264` (GPL).
+
+**Keputusan:**
+Bundle build **gyan essentials (GPL, ~103 MB)** sebagai sidecar
+(`bundle.externalBin`), file `binaries/ffmpeg-x86_64-pc-windows-msvc.exe`
+(gitignored; `download-ffmpeg.sh` mengunduh versi ter-pin). Resolusi di
+`mux.rs`: direktori exe → salinan dev `src-tauri/binaries/` → PATH.
+
+**Konsekuensi:**
+- (+) App ter-install jalan tanpa setup user; versi ffmpeg konsisten.
+- (−) Installer +100 MB; CI/build menjalankan script unduhan dulu.

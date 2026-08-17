@@ -13,6 +13,7 @@ A PRD may change over the life of a feature; the ADRs it spawns are the immutabl
 |-------|-------|------|--------|
 | PD-0001 | Screen Recorder (Tauri + React) | screen-record | Active |
 | PD-0002 | Microphone Capture & Sync (System + Mic Mixing) | screen-record | Active |
+| PD-0003 | Sensitive Data Censoring (OCR Keyword → Sensor Area) | screen-record | Active |
 
 
 ## How to add a PRD

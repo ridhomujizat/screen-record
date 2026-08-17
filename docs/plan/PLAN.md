@@ -17,6 +17,8 @@ M4 ✅ encode + mux → MP4 valid, stop bersih (CFR + align)
 M5 ✅ UI penuh (target list, window capture, timer, buka folder)
 M6 ✅ robustness (disk guard, frame-size guard, area capture)
 M7 ✅ microphone (capture + WAV per-source + amix + meter) — [PD-0002](../prd/PD-0002-microphone-capture-and-sync.md)
+M8 ✅ sensitive data sensor (OCR keyword → box) — [PD-0003](../prd/PD-0003-sensitive-data-censoring.md)
+M9 ✅ ffmpeg sidecar (bundle, no user install) — [ADR-0016](../adr/0016-bundle-ffmpeg-sidecar.md)
 ```
 
 Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
@@ -173,6 +175,28 @@ dihitung dari first-frame timestamps di master timeline. Di sesi nyata 30fps.
 
 ---
 
+## M8 — Sensitive data sensor (✅ selesai)
+
+**DoD:** setting keyword pre-record → sensor aktif saat label muncul → frame output bersih.
+
+**Yang sudah ada:**
+- `capture/censor/mod.rs`: `CensorConfig` (persist JSON app-config-dir), geometri anchor (kanan label +5px, 500×100, clamp), `RegionTracker` dwell (aktif di hit pertama, mati setelah 2 scan miss), `stamp()` BGRA solid hitam — 8 unit test.
+- `capture/censor/ocr.rs`: `ort` (ONNX Runtime CPU) × PP-OCRv4 mobile latin (det DB + rec CTC, model di-pin di `models/`, dibundel via `bundle.resources`), pre/post-processing Rust murni, CTC decode, keyword match substring per text-line — termasuk test end-to-end dengan label "Password" raster manual (det → rec → " Password" → hit).
+- Pump `capture/mod.rs`: feed frame terbaru ke worker 2 fps (slot latest), stamp region SEBELUM tulis `video.raw` (rahasia tidak pernah ke disk); worker fatal → recording stop + status `censor-failed` (fail-closed).
+- UI: panel sensor (toggle, chip keyword, box W/H/gap), badge "● N area disensor" via event `censor-status`, overlay kotak di preview canvas (rect sama dengan yang distempel).
+
+**Verifikasi:** `cargo test` (31 pass); `npm run tauri dev` → aktifkan sensor → record → buka form login → kotak hitam muncul di samping label "Password" di MP4.
+
+---
+
+## M9 — ffmpeg sidecar (✅ selesai)
+
+**DoD:** app jalan di mesin tanpa ffmpeg di PATH.
+
+**Yang sudah ada:** `bundle.externalBin` + `binaries/download-ffmpeg.sh` (gyan essentials GPL, libx264), resolusi `ffmpeg_bin()` di `mux.rs` (exe dir → dev binaries → PATH). Binary 103 MB di-gitignore; tester CI/runner unduh via script.
+
+---
+
 ## Struktur target akhir (untuk referensi saat implementasi)
 
 ```
@@ -185,10 +209,14 @@ src-tauri/src/
     ├── timeline.rs         ← first-frame align, gap tracker, tail pad
     ├── encode.rs           ← H264 + AAC (ffmpeg-next)
     ├── mux.rs              ← MP4 muxer (ffmpeg-next)
-    └── platform/
+    ├── platform/
         ├── mod.rs          ← trait ScreenCapture, type alias per OS
         ├── windows.rs      ← WGC + WASAPI loopback (v1)
         └── macos.rs        ← stub cfg-off (v2)
+    └── censor/             ← M8: sensitive data sensor (PD-0003) ✅
+        ├── mod.rs          ← config, region tracker (dwell), geometri 5px/500×100
+        └── ocr.rs          ← ort ×2 (PP-OCRv4 mobile latn det+rec), pre/post-process
+    binaries/               ← M9: ffmpeg sidecar (gitignored, download-ffmpeg.sh)
 ```
 
 ## Urutan kerja yang disarankan

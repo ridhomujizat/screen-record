@@ -5,6 +5,7 @@ pub mod capture;
 
 use capture::{Recorder, platform};
 use capture::audio::AudioOpts;
+use capture::censor::CensorConfig;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,7 +111,20 @@ async fn start_record(
     };
 
     let recorder: State<'_, Recorder> = app.state::<Recorder>();
-    recorder.start(app.clone(), target, audio).await
+    // Censor settings are read at start (fail-closed if models unloadable).
+    let censor = capture::censor::load_config(&app);
+    recorder.start(app.clone(), target, audio, censor).await
+}
+
+/// Censor sensor settings (PD-0003 §4.1) — persisted in the app config dir.
+#[tauri::command]
+async fn get_censor_config(app: AppHandle) -> Result<CensorConfig, String> {
+    Ok(capture::censor::load_config(&app))
+}
+
+#[tauri::command]
+async fn set_censor_config(app: AppHandle, cfg: CensorConfig) -> Result<(), String> {
+    capture::censor::save_config(&app, &cfg)
 }
 
 fn free_disk_gb() -> Option<f64> {
@@ -165,7 +179,9 @@ pub fn run() {
             start_record,
             stop_record,
             is_recording,
-            open_folder
+            open_folder,
+            get_censor_config,
+            set_censor_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

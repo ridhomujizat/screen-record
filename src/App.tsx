@@ -29,6 +29,38 @@ interface AudioDeviceInfo {
   isDefault: boolean;
 }
 
+interface CensorRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface CensorConfig {
+  enabled: boolean;
+  keywords: string[];
+  boxW: number;
+  boxH: number;
+  gap: number;
+}
+
+const CENSOR_DEFAULT: CensorConfig = {
+  enabled: false,
+  keywords: ["password", "kata sandi", "api key", "secret", "token", "credential", "passphrase"],
+  boxW: 500,
+  boxH: 100,
+  gap: 5,
+};
+
+interface CensorStatus {
+  active: number;
+  frameW: number;
+  frameH: number;
+  rects: CensorRect[];
+}
+
+const CENSOR_STATUS_IDLE: CensorStatus = { active: 0, frameW: 0, frameH: 0, rects: [] };
+
 const STATUS_IDLE: RecordStatus = {
   state: "idle",
   durationMs: 0,
@@ -62,6 +94,11 @@ export default function App() {
   const [micDevices, setMicDevices] = useState<AudioDeviceInfo[]>([]);
   const [micDevice, setMicDevice] = useState<string | null>(null);
   const [micLevel, setMicLevel] = useState(0);
+  const [censor, setCensor] = useState<CensorConfig>(CENSOR_DEFAULT);
+  const [kwInput, setKwInput] = useState("");
+  const [censorStatus, setCensorStatus] = useState<CensorStatus>(CENSOR_STATUS_IDLE);
+  const censorRectsRef = useRef<CensorRect[]>([]);
+  const censorScaleRef = useRef<number>(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -99,6 +136,18 @@ export default function App() {
         dst[j + 3] = 255;
       }
       ctx.putImageData(img, 0, 0);
+      // censor overlay: same rects that are stamped into the file (PD-0003)
+      const frameW = censorScaleRef.current;
+      if (frameW > 0 && censorRectsRef.current.length > 0) {
+        const s = width / frameW;
+        ctx.fillStyle = "rgba(0,0,0,0.85)";
+        ctx.strokeStyle = "rgba(255,80,80,0.9)";
+        ctx.lineWidth = 1;
+        for (const r of censorRectsRef.current) {
+          ctx.fillRect(r.x * s, r.y * s, r.w * s, r.h * s);
+          ctx.strokeRect(r.x * s, r.y * s, r.w * s, r.h * s);
+        }
+      }
     }).then((fn) => (un = fn));
     return () => { un?.(); };
   }, []);
@@ -110,6 +159,38 @@ export default function App() {
     );
     return () => { un?.(); };
   }, []);
+
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    listen<CensorStatus>("censor-status", (e) => {
+      setCensorStatus(e.payload);
+      censorRectsRef.current = e.payload.rects;
+      censorScaleRef.current =
+        e.payload.frameW > 0 ? e.payload.frameW : 0;
+    }).then((fn) => (un = fn));
+    return () => { un?.(); };
+  }, []);
+
+  useEffect(() => {
+    invoke<CensorConfig>("get_censor_config")
+      .then((c) => setCensor({ ...CENSOR_DEFAULT, ...c }))
+      .catch(() => setCensor(CENSOR_DEFAULT));
+  }, []);
+
+  function patchCensor(patch: Partial<CensorConfig>) {
+    const next = { ...censor, ...patch };
+    setCensor(next);
+    invoke("set_censor_config", { cfg: next }).catch((e) =>
+      setStatus({ ...STATUS_IDLE, state: "error", error: String(e) })
+    );
+  }
+
+  function addKeyword() {
+    const k = kwInput.trim().toLowerCase();
+    if (k.length < 4 || censor.keywords.includes(k)) return;
+    patchCensor({ keywords: [...censor.keywords, k] });
+    setKwInput("");
+  }
 
   async function loadSources() {
     const s = await invoke<SourceInfo[]>("list_sources");
@@ -290,6 +371,93 @@ export default function App() {
           </div>
           {audioMode !== "system" && !recording && micDevices.length === 0 && (
             <p className="meta">No microphone detected — recording will use system audio only.</p>
+          )}
+        </section>
+
+        {/* Sensitive data sensor (PD-0003) — set BEFORE record */}
+        <section className="section">
+          <label className="label">Sensitive data sensor</label>
+          <div className="censor-head">
+            <label className="area-toggle">
+              <input
+                type="checkbox"
+                checked={censor.enabled}
+                disabled={recording}
+                onChange={(e) => patchCensor({ enabled: e.target.checked })}
+              />
+              Sensor password / API key (OCR)
+            </label>
+            {recording && censor.enabled && (
+              <span className={`pill ${censorStatus.active > 0 ? "pill-rec" : "pill-idle"}`}>
+                {censorStatus.active > 0
+                  ? `● ${censorStatus.active} area disensor`
+                  : "● scanning"}
+              </span>
+            )}
+          </div>
+          {censor.enabled && !recording && (
+            <>
+              <div className="kw-list">
+                {censor.keywords.map((k) => (
+                  <span key={k} className="kw-chip">
+                    {k}
+                    <button
+                      className="kw-x"
+                      onClick={() =>
+                        patchCensor({ keywords: censor.keywords.filter((x) => x !== k) })
+                      }
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="area-inputs">
+                <input
+                  placeholder="add keyword (min 4)"
+                  value={kwInput}
+                  onChange={(e) => setKwInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addKeyword()}
+                />
+                <button className="btn btn-ghost" onClick={addKeyword}>
+                  +
+                </button>
+              </div>
+              <div className="censor-grid">
+                <label>
+                  Box W
+                  <input
+                    type="number"
+                    value={censor.boxW}
+                    min={8}
+                    onChange={(e) => patchCensor({ boxW: Number(e.target.value) })}
+                  />
+                </label>
+                <label>
+                  Box H
+                  <input
+                    type="number"
+                    value={censor.boxH}
+                    min={8}
+                    onChange={(e) => patchCensor({ boxH: Number(e.target.value) })}
+                  />
+                </label>
+                <label>
+                  Gap px
+                  <input
+                    type="number"
+                    value={censor.gap}
+                    min={0}
+                    onChange={(e) => patchCensor({ gap: Number(e.target.value) })}
+                  />
+                </label>
+              </div>
+              <p className="meta">
+                Kotak solid {censor.boxW}×{censor.boxH} mulai {censor.gap}px di kanan kata
+                kunci — distempel sebelum frame ditulis ke disk.
+              </p>
+            </>
           )}
         </section>
 

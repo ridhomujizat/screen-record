@@ -372,7 +372,7 @@ impl Muxer {
         }
 
         let out_err = std::process::Stdio::piped();
-        let child = Command::new("ffmpeg")
+        let child = Command::new(ffmpeg_bin())
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(out_err)
@@ -404,6 +404,37 @@ impl Muxer {
             let _ = std::fs::remove_file(p);
         }
         Ok(PathBuf::from(&out))
+    }
+}
+
+/// Resolve the ffmpeg binary: bundled sidecar next to the app exe
+/// (installed builds), dev copy in src-tauri/binaries, then PATH (ADR-0016).
+fn ffmpeg_bin() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("ffmpeg.exe");
+            if p.exists() {
+                return p.to_string_lossy().to_string();
+            }
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries/ffmpeg-x86_64-pc-windows-msvc.exe");
+    if dev.exists() {
+        return dev.to_string_lossy().to_string();
+    }
+    "ffmpeg".into()
+}
+
+#[cfg(test)]
+mod ffmpeg_sidecar_tests {
+    #[test]
+    fn ffmpeg_resolves_and_runs() {
+        let out = std::process::Command::new(super::ffmpeg_bin())
+            .arg("-version")
+            .output()
+            .expect("ffmpeg binary resolves");
+        assert!(out.status.success());
     }
 }
 
