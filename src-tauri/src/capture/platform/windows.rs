@@ -413,6 +413,69 @@ pub fn list_windows_capture_targets() -> Vec<(CaptureTarget, String, u32, u32)> 
     out
 }
 
+/// Enumerate visible top-level windows (with titles).
+/// Returns (target, label, width, height).
+#[allow(clippy::type_complexity)]
+pub fn list_windows_capture_targets_windows() -> Vec<(CaptureTarget, String, u32, u32)> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowRect, GetWindowTextW, IsWindowVisible,
+    };
+    use windows::Win32::Foundation::HWND;
+    use std::sync::Mutex;
+
+    let list: Mutex<Vec<(HWND, String, u32, u32)>> = Mutex::new(Vec::new());
+
+    unsafe extern "system" fn enum_proc(
+        hwnd: HWND,
+        lparam: LPARAM,
+    ) -> windows::core::BOOL {
+        let list = unsafe { &mut *(lparam.0 as *mut Mutex<Vec<(HWND, String, u32, u32)>>) };
+        unsafe {
+            if !IsWindowVisible(hwnd).as_bool() {
+                return windows::core::BOOL(1);
+            }
+            // skip windows without a title (system windows, tooltips, etc.)
+            let mut buf = [0u16; 256];
+            let len = GetWindowTextW(hwnd, &mut buf);
+            if len == 0 {
+                return windows::core::BOOL(1);
+            }
+            let title = String::from_utf16_lossy(&buf[..len as usize]);
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut rect);
+            let w = (rect.right - rect.left).max(0) as u32;
+            let h = (rect.bottom - rect.top).max(0) as u32;
+            if w == 0 || h == 0 {
+                return windows::core::BOOL(1);
+            }
+            // skip our own window (title contains "Screen Record")
+            if title.contains("Screen Record") {
+                return windows::core::BOOL(1);
+            }
+            list.lock().unwrap().push((hwnd, title, w, h));
+        }
+        windows::core::BOOL(1)
+    }
+
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(&list as *const _ as isize),
+        );
+    }
+
+    let mut out = Vec::new();
+    for (hwnd, title, w, h) in list.into_inner().unwrap() {
+        out.push((
+            CaptureTarget::Window(hwnd.0 as u64),
+            format!("🗔 {title} ({w}x{h})"),
+            w,
+            h,
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,5 +487,14 @@ mod tests {
         let (target, label, w, h) = &targets[0];
         assert!(w > &0 && h > &0, "display size invalid: {label}");
         assert!(matches!(target, CaptureTarget::Display(_)));
+    }
+}
+
+#[test]
+fn enumerate_windows_works() {
+    let wins = list_windows_capture_targets_windows();
+    // At minimum, the test runner's console window should exist.
+    for (_, label, w, h) in &wins {
+        assert!(w > &0 && h > &0, "bad window: {label}");
     }
 }

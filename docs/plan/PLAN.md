@@ -77,28 +77,16 @@ Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
 
 ---
 
-## M5 — UI penuh
+## M5 — UI penuh (✅ selesai — area select pindah ke M6)
 
-**DoD:** Alur lengkap: list sumber → pilih → record → stop → file tersimpan
-→ buka folder.
+**DoD:** Alur lengkap: list sumber → pilih → record → stop → file tersimpan → buka folder.
 
-**React:**
-- `TargetPicker`: daftar display + windows (+ area select nanti).
-- `AreaSelect`: overlay drag-select (koordinat dikirim ke Rust).
-- `RecordControls`: tombol record/stop, timer (dari event), status.
-- `ResultCard`: path file + tombol "Buka Folder" (plugin opener).
-- Status bar: error dari Rust (event) tampil rapi.
+**Yang sudah ada:**
+- Window capture: `EnumWindows` + `GetWindowTextW` → list jendela (skip title kosong & window sendiri) → dropdown optgroup Display/Windows.
+- Timer live (1s interval), tombol refresh sumber, result card (path + open folder + frames/sync).
+- Test: window enumeration — 12 total pass.
 
-**Rust tambahan:**
-- Command `open_folder(path)` (plugin opener sudah terpasang).
-- Emit `record-status` (idle/recording/finished/error + path).
-
-**Catatan:**
-- Area select: hitung koordinat relatif ke display (logical → physical
-  seperti Cap `logical_area_to_physical_bounds`).
-- Window capture: pakai `GraphicsCaptureItem` dari window handle.
-
----
+**Pindah ke M6:** area select (drag-select overlay + crop bounds).
 
 ## M6 — Robustness & polish
 

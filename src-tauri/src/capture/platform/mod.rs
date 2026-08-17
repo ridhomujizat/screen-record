@@ -54,10 +54,12 @@ pub fn create_capture(target: CaptureTarget, _max_fps: u32) -> PlatformCapture {
     macos::MacOsScreenCapture::new(target)
 }
 
-/// List capture targets: (target, label, width, height).
+/// List capture targets: (target, label, width, height) — displays then windows.
 #[cfg(target_os = "windows")]
 pub fn list_targets() -> Vec<(CaptureTarget, String, u32, u32)> {
-    windows::list_windows_capture_targets()
+    let mut v = windows::list_windows_capture_targets();
+    v.extend(windows::list_windows_capture_targets_windows());
+    v
 }
 #[cfg(target_os = "macos")]
 pub fn list_targets() -> Vec<(CaptureTarget, String, u32, u32)> {
