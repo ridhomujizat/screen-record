@@ -12,6 +12,7 @@ A PRD may change over the life of a feature; the ADRs it spawns are the immutabl
 | Story | Title | Epic | Status |
 |-------|-------|------|--------|
 | PD-0001 | Screen Recorder (Tauri + React) | screen-record | Active |
+| PD-0002 | Microphone Capture & Sync (System + Mic Mixing) | screen-record | Active |
 
 
 ## How to add a PRD

@@ -19,7 +19,14 @@ interface RecordStatus {
   framesCaptured: number;
   framesDropped: number;
   audioFrames: number;
+  micFrames: number;
+  micDrops: number;
   syncOffsetMs: number;
+}
+
+interface AudioDeviceInfo {
+  name: string;
+  isDefault: boolean;
 }
 
 const STATUS_IDLE: RecordStatus = {
@@ -30,6 +37,8 @@ const STATUS_IDLE: RecordStatus = {
   framesCaptured: 0,
   framesDropped: 0,
   audioFrames: 0,
+  micFrames: 0,
+  micDrops: 0,
   syncOffsetMs: 0,
 };
 
@@ -49,6 +58,10 @@ export default function App() {
   const [areaY, setAreaY] = useState("0");
   const [areaW, setAreaW] = useState("");
   const [areaH, setAreaH] = useState("");
+  const [audioMode, setAudioMode] = useState<"system" | "mic" | "both">("system");
+  const [micDevices, setMicDevices] = useState<AudioDeviceInfo[]>([]);
+  const [micDevice, setMicDevice] = useState<string | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -90,12 +103,29 @@ export default function App() {
     return () => { un?.(); };
   }, []);
 
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    listen<{ rms: number }>("audio-meter", (e) => setMicLevel(e.payload.rms)).then(
+      (fn) => (un = fn)
+    );
+    return () => { un?.(); };
+  }, []);
+
   async function loadSources() {
     const s = await invoke<SourceInfo[]>("list_sources");
     setSources(s);
     if (!selected && s.length > 0) setSelected(s[0]);
   }
   useEffect(() => { loadSources(); }, []);
+
+  async function loadMicDevices() {
+    const d = await invoke<AudioDeviceInfo[]>("list_audio_devices");
+    setMicDevices(d);
+    if (!micDevice && d.length > 0) {
+      setMicDevice(d.find((x) => x.isDefault)?.name ?? d[0].name);
+    }
+  }
+  useEffect(() => { loadMicDevices(); }, []);
 
   async function startRec() {
     if (!selected) return;
@@ -111,7 +141,13 @@ export default function App() {
         bounds = [x, y, x + w, y + h];
         kind = "area";
       }
-      await invoke("start_record", { targetId: selected.id, kind, bounds });
+      await invoke("start_record", {
+        targetId: selected.id,
+        kind,
+        bounds,
+        audioMode,
+        micDevice: audioMode === "system" ? null : micDevice,
+      });
       timerRef.current = window.setInterval(() => setElapsed((e) => e + 1000), 1000);
     } catch (e) {
       setStatus({ ...STATUS_IDLE, state: "error", error: String(e) });
@@ -208,6 +244,55 @@ export default function App() {
           )}
         </section>
 
+        {/* Audio sources */}
+        <section className="section">
+          <label className="label">Audio</label>
+          <div className="audio-row">
+            <div className="select-wrap">
+              <select
+                value={audioMode}
+                onChange={(e) => setAudioMode(e.target.value as "system" | "mic" | "both")}
+                disabled={recording}
+              >
+                <option value="system">System audio</option>
+                <option value="mic" disabled={micDevices.length === 0}>
+                  Microphone
+                </option>
+                <option value="both" disabled={micDevices.length === 0}>
+                  System + Microphone
+                </option>
+              </select>
+            </div>
+            {audioMode !== "system" && (
+              <div className="select-wrap">
+                <select
+                  value={micDevice ?? ""}
+                  onChange={(e) => setMicDevice(e.target.value)}
+                  disabled={recording || micDevices.length === 0}
+                >
+                  {micDevices.length === 0 && <option value="">No microphone found</option>}
+                  {micDevices.map((d) => (
+                    <option key={d.name} value={d.name}>
+                      {d.isDefault ? `${d.name} (default)` : d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {audioMode !== "system" && recording && (
+              <div className="meter" title="Microphone level">
+                <div
+                  className="meter-fill"
+                  style={{ width: `${Math.min(100, micLevel * 300)}%` }}
+                />
+              </div>
+            )}
+          </div>
+          {audioMode !== "system" && !recording && micDevices.length === 0 && (
+            <p className="meta">No microphone detected — recording will use system audio only.</p>
+          )}
+        </section>
+
         {/* Preview / recording state */}
         <section className="section">
           <div className={`preview ${recording ? "preview-live" : "preview-idle"}`}>
@@ -261,6 +346,12 @@ export default function App() {
               <span>{status.framesCaptured} frames</span>
               <span>·</span>
               <span>sync {status.syncOffsetMs}ms</span>
+              {status.micFrames > 0 && (
+                <>
+                  <span>·</span>
+                  <span>{status.micFrames} mic</span>
+                </>
+              )}
             </div>
             <button className="btn btn-ghost btn-block" onClick={() => invoke("open_folder", { path: status.filePath! })}>
               Open Folder

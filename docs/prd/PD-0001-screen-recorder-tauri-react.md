@@ -31,7 +31,7 @@ hanya untuk UI: pilih target, tombol record, preview, status.
 - Editor video, trim/crop timeline, overlay kamera, share/upload, cloud.
 - Rekaman window khusus yang menutup diri, window exclude list.
 - Streaming, screenshots, GIF.
-- Mic & kamera (desain disiapkan, implementasi v2).
+- Mic & kamera (mic kini diimplementasi: [PD-0002](PD-0002-microphone-capture-and-sync.md); kamera tetap v2).
 
 ## 3. User Persona & Use Case
 

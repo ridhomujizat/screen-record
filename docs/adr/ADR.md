@@ -272,3 +272,62 @@ implementasi trait.
 **Konsekuensi:**
 - (+) Tidak ada refactor pipeline saat macOS masuk.
 - (−) macOS punya permission model berbeda — perlu penanganan UX terpisah.
+
+---
+
+## ADR-0012: Mic via CPAL input stream pada timeline QPC yang sama
+
+**Status:** Accepted — detail: [0012](0012-microphone-capture-cpal-input.md)
+
+**Konteks:**
+Mic = sumber audio kedua dengan device clock sendiri. Bahaya utama: mic mendarat
+di timeline yang *beda* dari video & system audio. CPAL membungkus input device
+Windows dan memberi `info.timestamp().capture` (QPC) — persis jalur loopback
+yang sudah jalan (ADR-0007). Cap memakai CPAL utk mic dengan alasan sama.
+
+**Keputusan:**
+- `MicCapturer` = CPAL **input** stream pada device pilihan user
+  (`input_devices()`, default jika tak dipilih), konversi f32 interleaved
+  (konversi format sama dengan loopback).
+- Timestamp via anchor QPC yang sama → `SourceClockState("mic-audio")` sendiri
+  → remap ke `MasterClock` yang ada. **Tidak ada clock baru.**
+- Native rate (resample di ffmpeg saat finish — ADR-0013). Tanpa keepalive
+  (keepalive hanya utk loopback).
+- `try_send` + drop counter; callback tidak pernah blok.
+
+**Konsekuensi:**
+- (+) Sync relatif mic-vs-video & mic-vs-system otomatis benar via ADR-0003.
+- (+) Reuse kode konversi/anchoring loopback — diff kecil.
+- (−) BT headset bisa switch A2DP→HFP saat mic dibuka → ditangani re-init,
+  bukan dicegah.
+
+---
+
+## ADR-0013: Campur system + mic di ffmpeg saat finish, bukan live Rust mixer
+
+**Status:** Accepted — detail: [0013](0013-defer-audio-mixing-to-ffmpeg-at-finish.md)
+
+**Konteks:**
+Dua sumber audio dengan rate/channel beda harus jadi satu track AAC. Cap pakai
+live `AudioMixer` 1.300 baris — cocok utk editor/monitor mereka, berat utk kita.
+Pipeline kita sudah menunda encode ke ffmpeg binary saat finish (ADR-0008) dan
+sudah punya logika alignment di WAV writer. Bahaya korrektistas satu-satunya:
+penulisan WAV sekuensial — kalau ada drop, sampel berikutnya bergeser lebih awal
+dan timeline file menyimpang dari master timeline (komitmen ADR-0005 yang belum
+diterapkan di layer WAV).
+
+**Keputusan:**
+- Tiap sumber menulis **WAV sendiri yang dirender pada master timeline**:
+  sample cursor per writer; frame terlambat dari cursor → isi silence (gap-fill);
+  sumber mulai lebih awal dari video → trim leading samples. Sekali per sumber.
+- `finish()` dengan ≥2 WAV: ffmpeg `filter_complex` — `aresample=48000` per
+  input, `adelay` per offset start, `amix=normalize=0`. Jalur single-source
+  tetap persis argumen lama (regresi nol).
+- Meter level live = RMS frame mentah di pump (event `audio-meter`), sebelum mix.
+
+**Konsekuensi:**
+- (+) Nol Rust baru yang sync-kritis; mixing/resample oleh ffmpeg.
+- (+) Gap-fill di layer WAV akhirnya menegakkan ADR-0005 — sekaligus membenahi
+  drift laten pada jalur system-audio yang ada.
+- (−) Tidak ada monitor *mix* live (bukan goal v1; meter cukup).
+- (−) Proteksi clipping = clamp saja (limiter non-goal).

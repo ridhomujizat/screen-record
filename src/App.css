@@ -394,3 +394,23 @@ select:disabled {
 .area-inputs input:focus {
   border-color: #6366f1;
 }
+
+.audio-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meter {
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #eab308 75%, #ef4444);
+  border-radius: 3px;
+  transition: width 0.1s linear;
+}

@@ -23,6 +23,8 @@ If you are a new engineer, read the ADR index below before diving into code or t
 | 0009 | Keep the module layout flat and minimal; no unneeded abstraction layers                   | Accepted | 2026-08-17 |
 | 0010 | Communicate Rust → UI via Tauri events, not polling                                       | Accepted | 2026-08-17 |
 | 0011 | Add macOS capture later via ScreenCaptureKit behind the same trait (draft)                | Proposed | 2026-08-17 |
+| 0012 | Capture microphone with a CPAL input stream on the same QPC timeline                      | Accepted | 2026-08-17 |
+| 0013 | Mix system audio and microphone at finish via ffmpeg, not a live Rust mixer                | Accepted | 2026-08-17 |
 
 ## How to add an ADR
 

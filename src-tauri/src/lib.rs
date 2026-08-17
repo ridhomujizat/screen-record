@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager, State};
 pub mod capture;
 
 use capture::{Recorder, platform};
+use capture::audio::AudioOpts;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +14,33 @@ pub struct SourceInfo {
     pub label: String,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDeviceInfo {
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// List microphone (input) devices for the UI picker (PD-0002 §4.1).
+#[tauri::command]
+async fn list_audio_devices() -> Result<Vec<AudioDeviceInfo>, String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|d| d.name().ok());
+    let mut out = Vec::new();
+    if let Ok(devices) = host.input_devices() {
+        for d in devices {
+            if let Ok(name) = d.name() {
+                let is_default = default_name.as_deref() == Some(name.as_str());
+                out.push(AudioDeviceInfo { name, is_default });
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -45,6 +73,8 @@ async fn start_record(
     target_id: u64,
     kind: String,
     bounds: Option<(u32, u32, u32, u32)>,
+    audio_mode: Option<String>,
+    mic_device: Option<String>,
 ) -> Result<(), String> {
     let target = match kind.as_str() {
         "display" => platform::CaptureTarget::Display(target_id),
@@ -71,8 +101,16 @@ async fn start_record(
         }
     }
 
+    // Audio mode (PD-0002 §4.1): "system" (default) | "mic" | "both"
+    let audio = match audio_mode.as_deref() {
+        None | Some("system") => AudioOpts { system: true, mic: false, mic_device: None },
+        Some("mic") => AudioOpts { system: false, mic: true, mic_device },
+        Some("both") => AudioOpts { system: true, mic: true, mic_device },
+        Some(other) => return Err(format!("unknown audio mode: {other}")),
+    };
+
     let recorder: State<'_, Recorder> = app.state::<Recorder>();
-    recorder.start(app.clone(), target).await
+    recorder.start(app.clone(), target, audio).await
 }
 
 fn free_disk_gb() -> Option<f64> {
@@ -123,6 +161,7 @@ pub fn run() {
         .manage(Recorder::new())
         .invoke_handler(tauri::generate_handler![
             list_sources,
+            list_audio_devices,
             start_record,
             stop_record,
             is_recording,

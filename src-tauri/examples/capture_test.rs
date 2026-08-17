@@ -25,7 +25,7 @@ async fn main() {
     println!("video started");
 
     let (atx, mut arx) = tokio::sync::mpsc::channel::<audio::AudioFrame>(512);
-    let mut audio_cap = audio::SystemAudioCapturer::new().expect("audio capturer");
+    let mut audio_cap = audio::AudioCapturer::new(audio::AudioMode::System).expect("audio capturer");
     audio_cap.start(atx).expect("start audio");
     println!(
         "audio started ({}Hz, {}ch)",
@@ -36,7 +36,6 @@ async fn main() {
     let mut vcs = clock::SourceClockState::new("video");
     let mut acs = clock::SourceClockState::new("audio");
     let mut last_video_ns: Option<u64> = None;
-    let mut last_audio_ns: Option<u64> = None;
     let mut sync_ms: i64 = 0;
 
     let mut muxer: Option<mux::Muxer> = None;
@@ -54,7 +53,7 @@ async fn main() {
                 last_video_ns = Some(r.master_ns);
                 if muxer.is_none() {
                     let mut m = mux::Muxer::new(vf.width, vf.height, 30);
-                    m.start(&out_dir, 48_000, 2).expect("muxer start");
+                    m.start(&out_dir).expect("muxer start");
                     muxer = Some(m);
                     println!("muxer started {}x{}", vf.width, vf.height);
                 }
@@ -67,12 +66,11 @@ async fn main() {
                 let spf = af.samples.len() as u64 / af.channels.max(1) as u64;
                 let frame_ns = spf * 1_000_000_000 / af.sample_rate as u64;
                 let r = acs.remap(&clock, af.timestamp, frame_ns);
-                last_audio_ns = Some(r.master_ns);
-                if let (Some(v), Some(a)) = (last_video_ns, last_audio_ns) {
+                if let (Some(v), Some(a)) = (last_video_ns, Some(r.master_ns)) {
                     sync_ms = (v as i64 - a as i64) / 1_000_000;
                 }
                 if let Some(m) = muxer.as_mut() {
-                    m.push_audio(&af.samples, af.sample_rate, af.channels, r.master_ns).expect("push audio");
+                    m.push_audio("system", &af.samples, af.sample_rate, af.channels, r.master_ns).expect("push audio");
                 }
             }
         }

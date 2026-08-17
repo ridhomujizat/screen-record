@@ -11,11 +11,12 @@
 
 ```
 M1 ✅ scaffold (sudah: Tauri 2 + React 19 + TS)
-M2   capture video (WGC) → preview frame ke UI (tanpa encode)
-M3   audio + A/V sync (WASAPI loopback + MasterClock + alignment)
-M4   encode + mux → MP4 valid, stop bersih
-M5   UI penuh (target list, area select, timer, buka folder)
-M6   robustness (error, scale-on-resize, polish)
+M2 ✅ capture video (WGC) → preview frame ke UI
+M3 ✅ audio + A/V sync (WASAPI loopback + MasterClock + alignment)
+M4 ✅ encode + mux → MP4 valid, stop bersih (CFR + align)
+M5 ✅ UI penuh (target list, window capture, timer, buka folder)
+M6 ✅ robustness (disk guard, frame-size guard, area capture)
+M7 ✅ microphone (capture + WAV per-source + amix + meter) — [PD-0002](../prd/PD-0002-microphone-capture-and-sync.md)
 ```
 
 Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
@@ -99,6 +100,76 @@ Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
 - Verifikasi: `examples/area_test.rs` → crop 100,100,500,400 → MP4 400×300 valid (H.264+AAC, 61 frame).
 
 **Catatan:** area select masih input numerik (bukan drag-select overlay — itu enhancement berikutnya).
+
+---
+
+## M7 — Microphone capture + mixing (✅ selesai)
+
+> PRD: [PD-0002](../prd/PD-0002-microphone-capture-and-sync.md) · ADR: [0012](../adr/0012-microphone-capture-cpal-input.md) (capture), [0013](../adr/0013-defer-audio-mixing-to-ffmpeg-at-finish.md) (mixing) · Diagram: [03](../diagram/03-microphone-capture-and-mixing.md)
+
+**DoD terverifikasi (headless):** mode "both" → MP4 valid **satu track AAC campuran**;
+first-frame offset mic **+16ms**, system **+18ms** vs video (toleransi ≤50ms ✅);
+mode mic-only & system-only jalan; `cargo test` 17 pass (5 test WavWriter baru);
+ffprobe: tepat 1 stream video + 1 stream audio di semua mode.
+
+**Yang sudah ada:**
+- **WavWriter per-source** (`mux.rs`): tiap sumber menulis WAV sendiri yang
+  dirender pada master timeline (anchor = video start) — satu mekanisme untuk
+  trim (audio lebih awal), gap-fill silence, late-start (silence di depan),
+  dan tail-pad ke durasi video (ADR-0004/0005 akhirnya diterapkan di layer
+  WAV). 5 unit test: gap, trim, late-start, tail-pad, routing per-source.
+- **`AudioCapturer`** (`audio.rs`): generalisasi loopback → dua mode `System`
+  (loopback + keepalive) dan `Mic{device}` (input stream biasa, tanpa
+  keepalive). Callback/konversi/anchor QPC shared — tidak ada clock baru.
+- **`finish()` amix** (`mux.rs`): ≥2 WAV → `filter_complex`
+  `aformat=48000/stereo` per input + `amix=normalize=0` → satu AAC;
+  1 WAV → jalur lama tanpa `-itsoffset` (WAV sudah aligned by construction,
+  offset selalu 0); 0 WAV → video-only. stderr ffmpeg kini ditangkap ke
+  pesan error (debugging).
+- **Orchestrator** (`mod.rs`): dua thread audio dengan **re-init saat stream
+  error** (unplug / BT HFP switch — pola Cap `rate_changed`), meter RMS mic →
+  event `audio-meter` (throttle 100ms), `RecordStatus` + `micFrames`/`micDrops`,
+  **fix clock per-sesi** (bug lama `OnceLock` global — sesi ke-2 memakai clock
+  sesi pertama).
+- **UI** (`App.tsx`): dropdown mode audio (System / Mic / System+Mic), pilihan
+  device mic (`list_audio_devices`), meter level live saat rekam, stat mic di
+  result card.
+- **Simplifikasi vs ADR-0013**: `adelay` tidak diperlukan — late-start sudah
+  tercakup oleh gap-fill silence di posisi timeline (satu mekanisme, bukan dua).
+  Efek output identik.
+
+**Langkah (urut, tiap langkah bisa diverifikasi):**
+
+1. **Device list** — command `list_audio_devices` (CPAL `input_devices()`),
+   UI dropdown + toggle mode audio (System / Mic / System+Mic).
+2. **WavWriter per-source** — refactor kecil dari `mux.rs`: ekstrak penulis WAV
+   jadi struct per sumber dengan sample cursor + gap-fill silence + first-frame
+   trim. Unit test dulu (gap sintetis, mulai awal/terlambat). Gunakan logika
+   `timeline.rs` yang sudah ada + ter-test.
+3. **MicCapturer** — generalisasi `audio.rs`: mode `Input(device)` vs
+   `LoopbackOutput` (keepalive hanya loopback); thread audio kedua di
+   `capture/mod.rs`; `try_send` + drop counter.
+4. **Pump** — `SourceClockState("mic-audio")`, tulis WAV per sumber, RMS →
+   event `audio-meter` (throttle ~100ms); `RecordStatus` + field mic.
+5. **finish() amix** — ≥2 WAV → `filter_complex` `aresample=48000` + `adelay`
+   per offset + `amix=normalize=0`; jalur 1-WAV tidak berubah.
+6. **Robustness mic** — unplug → pad silence + warning; format mismatch
+   (BT HFP) → re-init stream.
+7. **Verifikasi** — `examples/capture_test.rs` dengan mic; ffprobe: tepat satu
+   track AAC; cek offset waveform (clap test) ≤ 50ms; `cargo test` pass.
+
+**Bug lama yang ikut dibereskan:** ~~`global_clock()` di `capture/mod.rs`
+memakai `OnceLock` statis — sesi rekam ke-2 mendapat clock sesi pertama. Ganti
+jadi state per-session (field `RecorderState`).~~ ✅ clock kini per-sesi.
+
+**Verifikasi manual (sesi interaktif):** `npm run tauri dev` → pilih mode
+"System + Microphone" → pilih device → Record → bicara + mainkan suara →
+Stop → putar MP4: kedua suara terdengar di satu track, sinkron; meter bergerak
+saat bicara. Clap test utk offset ≤50ms.
+
+**Catatan headless:** WGC hanya mengirim 1–2 frame saat layar tak berubah →
+durasi MP4 pendek; offset A/V yang diukur (16–18ms) tetap valid karena
+dihitung dari first-frame timestamps di master timeline. Di sesi nyata 30fps.
 
 ---
 

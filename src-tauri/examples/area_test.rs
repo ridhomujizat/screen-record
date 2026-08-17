@@ -15,7 +15,7 @@ async fn main() {
     cap.start(vtx).await.expect("start");
 
     let (atx, mut arx) = tokio::sync::mpsc::channel::<audio::AudioFrame>(512);
-    let mut audio_cap = audio::SystemAudioCapturer::new().expect("audio");
+    let mut audio_cap = audio::AudioCapturer::new(audio::AudioMode::System).expect("audio");
     audio_cap.start(atx).expect("audio start");
 
     let clock = clock::MasterClock::new(48000);
@@ -34,7 +34,7 @@ async fn main() {
                 if vframes <= 2 { println!("frame {vframes}: {}x{}", vf.width, vf.height); }
                 if muxer.is_none() {
                     let mut m = mux::Muxer::new(vf.width, vf.height, 30);
-                    m.start(&std::env::temp_dir().join("sr-area"), 48000, 2).expect("mux start");
+                    m.start(&std::env::temp_dir().join("sr-area")).expect("mux start");
                     muxer = Some(m);
                 }
                 if let Some(m) = muxer.as_mut() { let _ = m.push_video(&vf.data, r.master_ns); }
@@ -43,7 +43,7 @@ async fn main() {
                 let spf = af.samples.len() as u64 / af.channels.max(1) as u64;
                 let fnns = spf * 1_000_000_000 / af.sample_rate as u64;
                 let r = acs.remap(&clock, af.timestamp, fnns);
-                if let Some(m) = muxer.as_mut() { let _ = m.push_audio(&af.samples, af.sample_rate, af.channels, r.master_ns); }
+                if let Some(m) = muxer.as_mut() { let _ = m.push_audio("system", &af.samples, af.sample_rate, af.channels, r.master_ns); }
             }
         }
     }
