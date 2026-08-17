@@ -59,7 +59,7 @@ async fn main() {
                     println!("muxer started {}x{}", vf.width, vf.height);
                 }
                 if let Some(m) = muxer.as_mut() {
-                    m.push_video(&vf.data).expect("push video");
+                    m.push_video(&vf.data, r.master_ns).expect("push video");
                 }
             }
             Some(af) = arx.recv() => {
@@ -72,7 +72,7 @@ async fn main() {
                     sync_ms = (v as i64 - a as i64) / 1_000_000;
                 }
                 if let Some(m) = muxer.as_mut() {
-                    m.push_audio(&af.samples, af.sample_rate, af.channels).expect("push audio");
+                    m.push_audio(&af.samples, af.sample_rate, af.channels, r.master_ns).expect("push audio");
                 }
             }
         }

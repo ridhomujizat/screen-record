@@ -65,18 +65,15 @@ Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
 
 ---
 
-## M4 — Encode + mux (✅ selesai)
+## M4 — Encode + mux (✅ selesai, v2 dengan CFR + A/V align)
 
-**DoD:** `stop_record` menghasilkan file `.mp4` (H.264+AAC) valid, durasi video == audio.
+**DoD:** `stop_record` menghasilkan `.mp4` (H.264+AAC) valid, audio & video sinkron dari frame pertama.
 
 **Yang sudah ada:**
-- `capture/mux.rs`: tulis raw BGRA ke file + WAV (header kita tulis sendiri) saat rekam; saat stop, ffmpeg encode libx264 ultrafast + AAC → MP4, cleanup raw.
-- Keputusan penting: **tidak pipe ke ffmpeg** — ffmpeg 8.0 gyan.dev mati di frame ~9 saat rawvideo via pipe (bug build); file input terbukti stabil. Bonus: raw file = data aman kalau crash.
+- `capture/mux.rs`: tulis raw BGRA + WAV (header sendiri) saat rekam; stop → ffmpeg encode libx264 ultrafast + AAC → MP4.
+- **v2 fix (audio delay):** WGC kirim frame VFR (saat layar berubah). Dulu ditulis apa adanya + `-r 30` → video "ngebut" → audio delay & terpotong. Sekarang **CFR frame duplication** (isi gap dengan frame terakhir sesuai master timeline) → video berdurasi sungguhan; **first-frame align** (trim audio awal / `-itsoffset` audio) → A/V start bersamaan.
 - Output: `~/Videos/screen-record/rec-<epoch>.mp4`.
-- UI: status "finished" + path file + tombol "Open folder" (plugin opener).
-- Verifikasi: `examples/capture_test.rs` → MP4 valid (H.264 2880×1920@30, AAC 48k stereo, 2MB). ffprobe OK.
-
-**Catatan:** durasi MP4 = durasi video (62 frame = 2.07s di headless karena WGC kirim saat layar berubah; `-shortest` pakai terpendek). Di sesi nyata penuh.
+- Verifikasi: ffprobe → video start 0.000s & audio start 0.000s, durasi 2.867 vs 2.858 (hampir sama).
 
 ---
 

@@ -211,7 +211,7 @@ impl Recorder {
                             eprintln!("[mux] started {w}x{h}", w = vf.width, h = vf.height);
                         }
                         if let Some(m) = muxer.as_mut() {
-                            let _ = m.push_video(&vf.data);
+                            let _ = m.push_video(&vf.data, remap.master_ns);
                         }
                     }
                     Some(af) = arx.recv() => {
@@ -228,7 +228,7 @@ impl Recorder {
                             sync_offset.store(off / 1_000_000, Ordering::Relaxed);
                         }
                         if let Some(m) = muxer.as_mut() {
-                            let _ = m.push_audio(&af.samples, af.sample_rate, af.channels);
+                            let _ = m.push_audio(&af.samples, af.sample_rate, af.channels, remap.master_ns);
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
