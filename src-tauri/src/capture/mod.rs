@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod clock;
+pub mod mux;
 pub mod platform;
 pub mod timeline;
 
@@ -15,6 +16,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
 };
+use std::path::PathBuf;
 use tokio::sync::{Mutex, oneshot};
 use tauri::{AppHandle, Emitter};
 
@@ -161,6 +163,8 @@ impl Recorder {
         let video_cs2 = video_clock_state.clone();
         let audio_cs2 = audio_clock_state.clone();
         let frames_captured2 = self.state.frames_captured.clone();
+        let frames_captured3 = self.state.frames_captured.clone();
+        let app_sync2 = app.clone();
         let preview_task = tokio::spawn(async move {
             // Preview is expensive (downscale + IPC); keep it off the sync path.
             loop {
@@ -182,6 +186,10 @@ impl Recorder {
             #[allow(unused_assignments)]
             let mut last_audio_ns: Option<u64> = None;
             let mut last_video_ns: Option<u64> = None;
+            let mut muxer: Option<mux::Muxer> = None;
+            let mut vw: u32 = 0;
+            let mut vh: u32 = 0;
+            let mut mux_started = false;
 
             loop {
                 tokio::select! {
@@ -191,6 +199,20 @@ impl Recorder {
                             cs.remap(&clock2(), vf.timestamp, 33_333_333)
                         };
                         last_video_ns = Some(remap.master_ns);
+                        // start muxer on first frame (know width/height)
+                        if muxer.is_none() {
+                            vw = vf.width; vh = vf.height;
+                            let mut m = mux::Muxer::new(vf.width, vf.height, 30);
+                            let dir = std::env::temp_dir().join("screen-record-m4");
+                            let _ = std::fs::create_dir_all(&dir);
+                            m.start(&dir, 48_000, 2).ok();
+                            muxer = Some(m);
+                            mux_started = true;
+                            eprintln!("[mux] started {w}x{h}", w = vf.width, h = vf.height);
+                        }
+                        if let Some(m) = muxer.as_mut() {
+                            let _ = m.push_video(&vf.data);
+                        }
                     }
                     Some(af) = arx.recv() => {
                         audio_frames_counter2.fetch_add(1, Ordering::Relaxed);
@@ -205,11 +227,45 @@ impl Recorder {
                             let off = v as i64 - a as i64;
                             sync_offset.store(off / 1_000_000, Ordering::Relaxed);
                         }
+                        if let Some(m) = muxer.as_mut() {
+                            let _ = m.push_audio(&af.samples, af.sample_rate, af.channels);
+                        }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
                         if !recording_flag(&state_pump) {
                             break;
                         }
+                    }
+                }
+            }
+            let _ = (mux_started, vw, vh);
+
+            // Finish muxing → MP4 in ~/Videos/screen-record
+            if let Some(m) = muxer.as_mut() {
+                let videos = dirs_videos_dir();
+                let out = videos.join(format!(
+                    "rec-{}.mp4",
+                    chrono_like_timestamp()
+                ));
+                match m.finish(&out) {
+                    Ok(p) => {
+                        eprintln!("[mux] MP4 saved: {}", p.display());
+                        let _ = app_sync2.emit(
+                            "record-status",
+                            RecordStatus {
+                                state: "finished".into(),
+                                duration_ms: last_audio_ns.map(|n| n / 1_000_000).unwrap_or(0),
+                                file_path: Some(p.to_string_lossy().to_string()),
+                                error: None,
+                                frames_captured: frames_captured3.load(Ordering::Relaxed),
+                                frames_dropped: 0,
+                                audio_frames: audio_frames_counter2.load(Ordering::Relaxed),
+                                sync_offset_ms: sync_offset.load(Ordering::Relaxed),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[mux] finish error: {e}");
                     }
                 }
             }
@@ -299,6 +355,23 @@ fn global_clock() -> Arc<MasterClock> {
     CLOCK
         .get_or_init(|| MasterClock::new(clock::DEFAULT_SAMPLE_RATE))
         .clone()
+}
+
+
+fn dirs_videos_dir() -> PathBuf {
+    use std::path::PathBuf;
+    // ~/Videos/screen-record (fallback to temp)
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    let videos = PathBuf::from(home).join("Videos").join("screen-record");
+    let _ = std::fs::create_dir_all(&videos);
+    videos
+}
+
+fn chrono_like_timestamp() -> String {
+    // epoch secs (filename uniquifier; no chrono dep)
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    format!("m{}", now.as_secs())
 }
 
 fn emit_preview(app: &AppHandle, vf: &platform::VideoFrame) {

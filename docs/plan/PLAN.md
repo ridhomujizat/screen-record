@@ -65,29 +65,18 @@ Tiap milestone punya **definition of done** (DoD) yang bisa dicoba manual.
 
 ---
 
-## M4 — Encode + mux (MP4)
+## M4 — Encode + mux (✅ selesai)
 
-**DoD:** `stop_record` menghasilkan file `.mp4` (H.264+AAC) yang valid,
-bisa diputar di VLC; durasi video == durasi audio.
+**DoD:** `stop_record` menghasilkan file `.mp4` (H.264+AAC) valid, durasi video == audio.
 
-**Files:**
-- `src-tauri/src/capture/encode.rs` — H264 (ultrafast, software) + AAC
-  encoder wrap (ffmpeg-next).
-- `src-tauri/src/capture/mux.rs` — MP4 muxer (ffmpeg-next): terima
-  VideoFrame + AudioFrame ber-timestamp, tulis sample dengan pts dari
-  master timeline.
-- `src-tauri/src/capture/mod.rs` — orchestrator: source → encoder → muxer,
-  handle stop (flush semua encoder/muxer, close file).
+**Yang sudah ada:**
+- `capture/mux.rs`: tulis raw BGRA ke file + WAV (header kita tulis sendiri) saat rekam; saat stop, ffmpeg encode libx264 ultrafast + AAC → MP4, cleanup raw.
+- Keputusan penting: **tidak pipe ke ffmpeg** — ffmpeg 8.0 gyan.dev mati di frame ~9 saat rawvideo via pipe (bug build); file input terbukti stabil. Bonus: raw file = data aman kalau crash.
+- Output: `~/Videos/screen-record/rec-<epoch>.mp4`.
+- UI: status "finished" + path file + tombol "Open folder" (plugin opener).
+- Verifikasi: `examples/capture_test.rs` → MP4 valid (H.264 2880×1920@30, AAC 48k stereo, 2MB). ffprobe OK.
 
-**Catatan:**
-- FFmpeg lib setup Windows: dokumentasikan di README (vcpkg `ffmpeg` /
-  msys2 `mingw-w64-x86_64-ffmpeg`), atau pakai feature static.
-- PTS dihitung dari `master_ns` di timeline — jangan pakai wall clock.
-
-**Verifikasi:**
-- Record 10 detik → `ffprobe` menunjukkan 1 video stream (h264) +
-  1 audio stream (aac), durasi sama, start_time ≈ 0.
-- Test unit: encoder menerima frame sintetik → output bytes valid.
+**Catatan:** durasi MP4 = durasi video (62 frame = 2.07s di headless karena WGC kirim saat layar berubah; `-shortest` pakai terpendek). Di sesi nyata penuh.
 
 ---
 

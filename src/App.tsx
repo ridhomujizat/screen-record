@@ -152,6 +152,18 @@ function App() {
           frames, sync offset {status.syncOffsetMs}ms.
         </p>
       )}
+      {status.state === "finished" && status.filePath && (
+        <div className="status">
+          <p>✅ Recording saved:</p>
+          <code>{status.filePath}</code>
+          <button
+            onClick={() => invoke("open_folder", { path: status.filePath! })}
+            style={{ marginLeft: 8 }}
+          >
+            📂 Open folder
+          </button>
+        </div>
+      )}
     </main>
   );
 }

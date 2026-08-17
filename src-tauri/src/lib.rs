@@ -59,6 +59,12 @@ async fn is_recording(app: AppHandle) -> Result<bool, String> {
     Ok(recorder.is_recording().await)
 }
 
+#[tauri::command]
+async fn open_folder(path: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(&path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -68,7 +74,8 @@ pub fn run() {
             list_sources,
             start_record,
             stop_record,
-            is_recording
+            is_recording,
+            open_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
